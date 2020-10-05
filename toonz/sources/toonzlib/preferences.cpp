@@ -26,6 +26,7 @@
 #include <QStringList>
 #include <QAction>
 #include <QColor>
+#include <QTextStream>
 
 // boost includes
 #include <boost/bind.hpp>
@@ -365,6 +366,8 @@ void Preferences::definePreferenceItems() {
   // Interface
   define(CurrentStyleSheetName, "CurrentStyleSheetName", QMetaType::QString,
          "Default");
+  define(additionalStyleSheet, "additionalStyleSheet", QMetaType::QString, "");
+  define(iconTheme, "iconTheme", QMetaType::Bool, false);
   define(pixelsOnly, "pixelsOnly", QMetaType::Bool, false);
   define(oldUnits, "oldUnits", QMetaType::QString, "mm");
   define(oldCameraUnits, "oldCameraUnits", QMetaType::QString, "inch");
@@ -454,8 +457,7 @@ void Preferences::definePreferenceItems() {
          0.1, std::numeric_limits<double>::max());
 
   define(EnableAutocreation, "EnableAutocreation", QMetaType::Bool, true);
-  define(NumberingSystem, "NumberingSystem", QMetaType::Int,
-         0);  // Incremental
+  define(NumberingSystem, "NumberingSystem", QMetaType::Int, 0);  // Incremental
   define(EnableAutoStretch, "EnableAutoStretch", QMetaType::Bool, true);
   define(EnableCreationInHoldCells, "EnableCreationInHoldCells",
          QMetaType::Bool, true);
@@ -488,8 +490,8 @@ void Preferences::definePreferenceItems() {
   define(cursorOutlineEnabled, "cursorOutlineEnabled", QMetaType::Bool, true);
   define(levelBasedToolsDisplay, "levelBasedToolsDisplay", QMetaType::Int,
          0);  // Default
-  define(useCtrlAltToResizeBrush, "useCtrlAltToResizeBrush",
-         QMetaType::Bool, true);
+  define(useCtrlAltToResizeBrush, "useCtrlAltToResizeBrush", QMetaType::Bool,
+         true);
 
   // Xsheet
   define(xsheetLayoutPreference, "xsheetLayoutPreference", QMetaType::QString,
@@ -897,13 +899,40 @@ QString Preferences::getCurrentLanguage() const {
 
 //-----------------------------------------------------------------
 
-QString Preferences::getCurrentStyleSheetPath() const {
+QString Preferences::getCurrentStyleSheet() const {
   QString currentStyleSheetName = getStringValue(CurrentStyleSheetName);
   if (currentStyleSheetName.isEmpty()) return QString();
   TFilePath path(TEnv::getConfigDir() + "qss");
   QString string = currentStyleSheetName + QString("/") +
                    currentStyleSheetName + QString(".qss");
-  return QString("file:///" + path.getQString() + "/" + string);
+  QString styleSheetPath = path.getQString() + "/" + string;
+
+  QString additionalSheetStr = getStringValue(additionalStyleSheet);
+  // if there is no additional style sheet, return the path and let
+  // Qt to load and parse it
+  if (additionalSheetStr.isEmpty()) return QString("file:///" + styleSheetPath);
+
+  // if there is any additional style sheet, load the style sheet
+  // from the file and combine with it
+  QString styleSheetStr;
+  QFile f(styleSheetPath);
+  if (f.open(QFile::ReadOnly | QFile::Text)) {
+    QTextStream ts(&f);
+    styleSheetStr = ts.readAll();
+  }
+  styleSheetStr += additionalSheetStr;
+
+  // here we will convert all relative paths to absolute paths
+  // or Qt will look for images relative to the current working directory
+  // since it has no idea where the style sheet comes from.
+
+  QString currentStyleFolderPath =
+      path.getQString().replace("\\", "/") + "/" + currentStyleSheetName;
+
+  styleSheetStr.replace(QRegExp("url\\(['\"]([^'\"]+)['\"]\\)"),
+                        "url(\"" + currentStyleFolderPath + QString("/\\1\")"));
+
+  return styleSheetStr;
 }
 
 //-----------------------------------------------------------------

@@ -223,7 +223,7 @@ project->setUseScenePath(TProject::Extras, false);
   // Imposto la rootDir per ImageCache
 
   /*-- TOONZCACHEROOTの設定  --*/
-  TFilePath cacheDir               = ToonzFolder::getCacheRootFolder();
+  TFilePath cacheDir = ToonzFolder::getCacheRootFolder();
   if (cacheDir.isEmpty()) cacheDir = TEnv::getStuffDir() + "cache";
   TImageCache::instance()->setRootDir(cacheDir);
 }
@@ -322,10 +322,10 @@ int main(int argc, char *argv[]) {
   QApplication a(argc, argv);
 
 #ifdef MACOSX
-// This workaround is to avoid missing left button problem on Qt5.6.0.
-// To invalidate m_rightButtonClicked in Qt/qnsview.mm, sending
-// NSLeftButtonDown event before NSLeftMouseDragged event propagated to
-// QApplication. See more details in ../mousedragfilter/mousedragfilter.mm.
+  // This workaround is to avoid missing left button problem on Qt5.6.0.
+  // To invalidate m_rightButtonClicked in Qt/qnsview.mm, sending
+  // NSLeftButtonDown event before NSLeftMouseDragged event propagated to
+  // QApplication. See more details in ../mousedragfilter/mousedragfilter.mm.
 
 #include "mousedragfilter.h"
 
@@ -414,6 +414,14 @@ int main(int argc, char *argv[]) {
     assert(ret);
   }
 #endif
+
+  // Set icon theme search paths
+  QStringList themeSearchPathsList = {":/icons"};
+  QIcon::setThemeSearchPaths(themeSearchPathsList);
+  // qDebug() << "All icon theme search paths:" << QIcon::themeSearchPaths();
+
+  // Set show icons in menus flag (use iconVisibleInMenu to disable selectively)
+  QApplication::instance()->setAttribute(Qt::AA_DontShowIconsInMenus, false);
 
   TEnv::setApplicationFileName(argv[0]);
 
@@ -583,6 +591,11 @@ int main(int argc, char *argv[]) {
                      Qt::white);
   a.processEvents();
 
+  // Set default start icon theme
+  QIcon::setThemeName(Preferences::instance()->getIconTheme() ? "dark"
+                                                              : "light");
+  // qDebug() << "Icon theme name:" << QIcon::themeName();
+
   // stile
   QApplication::setStyle("windows");
 
@@ -672,7 +685,7 @@ int main(int argc, char *argv[]) {
   a.processEvents();
 
   // Carico lo styleSheet
-  QString currentStyle = Preferences::instance()->getCurrentStyleSheetPath();
+  QString currentStyle = Preferences::instance()->getCurrentStyleSheet();
   a.setStyleSheet(currentStyle);
 
   w.setWindowTitle(QString::fromStdString(TEnv::getApplicationFullName()));

@@ -46,7 +46,6 @@ TPanel::TPanel(QWidget *parent, Qt::WindowFlags flags,
     , m_panelType("")
     , m_isMaximizable(true)
     , m_isMaximized(false)
-    , m_isActive(true)
     , m_panelTitleBar(0)
     , m_multipleInstancesAllowed(true) {
   // setFeatures(QDockWidget::DockWidgetMovable |
@@ -78,15 +77,6 @@ TPanel::~TPanel() {
     if (SaveLoadQSettings *persistent =
             dynamic_cast<SaveLoadQSettings *>(widget()))
       persistent->save(settings);
-  }
-}
-
-//-----------------------------------------------------------------------------
-
-void TPanel::setActive(bool value) {
-  m_isActive = value;
-  if (m_panelTitleBar) {
-    m_panelTitleBar->setIsActive(m_isActive);
   }
 }
 
@@ -129,19 +119,13 @@ void TPanel::enterEvent(QEvent *event) {
   QWidget *w = qApp->activeWindow();
   if (w) {
     // grab the focus, unless a line-edit is focused currently
-    bool shouldSetFocus = true;
-
     QWidget *focusWidget = qApp->focusWidget();
-    if (focusWidget) {
-      QLineEdit *lineEdit = dynamic_cast<QLineEdit *>(focusWidget);
-      if (lineEdit) {
-        shouldSetFocus = false;
-      }
+    if (focusWidget && dynamic_cast<QLineEdit *>(focusWidget)) {
+      event->accept();
+      return;
     }
 
-    if (shouldSetFocus) {
-      widgetFocusOnEnter();
-    }
+    widgetFocusOnEnter();
 
     // Some panels (e.g. Viewer, StudioPalette, Palette, ColorModel) are
     // activated when mouse enters. Viewer is activatable only when being
@@ -157,7 +141,13 @@ void TPanel::enterEvent(QEvent *event) {
 //-----------------------------------------------------------------------------
 /*! clear focus when mouse leaves
  */
-void TPanel::leaveEvent(QEvent *event) { widgetClearFocusOnLeave(); }
+void TPanel::leaveEvent(QEvent *event) {
+  QWidget *focusWidget = qApp->focusWidget();
+  if (focusWidget && dynamic_cast<QLineEdit *>(focusWidget)) {
+    return;
+  }
+  widgetClearFocusOnLeave();
+}
 
 //-----------------------------------------------------------------------------
 /*! load and restore previous geometry and state of the floating panel.
@@ -190,13 +180,10 @@ void TPanel::restoreFloatingPanelState() {
 //-----------------------------------------------------------------------------
 
 TPanelTitleBarButton::TPanelTitleBarButton(QWidget *parent,
-                                           const QString &standardPixmapName,
-                                           const QString &rolloverPixmapName,
-                                           const QString &pressedPixmapName)
+                                           const QString &standardPixmapName)
     : QWidget(parent)
     , m_standardPixmap(standardPixmapName)
-    , m_rolloverPixmap(rolloverPixmapName)
-    , m_pressedPixmap(pressedPixmapName)
+    , m_standardPixmapName(standardPixmapName)
     , m_rollover(false)
     , m_pressed(false)
     , m_buttonSet(0)
@@ -207,13 +194,9 @@ TPanelTitleBarButton::TPanelTitleBarButton(QWidget *parent,
 //-----------------------------------------------------------------------------
 
 TPanelTitleBarButton::TPanelTitleBarButton(QWidget *parent,
-                                           const QPixmap &standardPixmap,
-                                           const QPixmap &rolloverPixmap,
-                                           const QPixmap &pressedPixmap)
+                                           const QPixmap &standardPixmap)
     : QWidget(parent)
     , m_standardPixmap(standardPixmap)
-    , m_rolloverPixmap(rolloverPixmap)
-    , m_pressedPixmap(pressedPixmap)
     , m_rollover(false)
     , m_pressed(false)
     , m_buttonSet(0)
@@ -243,10 +226,33 @@ void TPanelTitleBarButton::setPressed(bool pressed) {
 
 void TPanelTitleBarButton::paintEvent(QPaintEvent *event) {
   QPainter painter(this);
-  painter.drawPixmap(0, 0,
-                     m_pressed
-                         ? m_pressedPixmap
-                         : m_rollover ? m_rolloverPixmap : m_standardPixmap);
+
+  // Create color states for the button
+  QPixmap normalPixmap(m_standardPixmap.size());
+  QPixmap onPixmap(m_standardPixmap.size());
+  QPixmap overPixmap(m_standardPixmap.size());
+  normalPixmap.fill(Qt::transparent);
+  onPixmap.fill(QColor(getPressedColor()));
+  overPixmap.fill(QColor(getOverColor()));
+
+  // Set unique 'pressed' colors if filename contains...
+  if (m_standardPixmapName.contains("freeze", Qt::CaseInsensitive)) {
+    onPixmap.fill(QColor(getFreezeColor()));
+  }
+  if (m_standardPixmapName.contains("preview", Qt::CaseInsensitive)) {
+    onPixmap.fill(QColor(getPreviewColor()));
+  }
+
+  // Compose the state colors
+  painter.drawPixmap(
+      0, 0, m_pressed ? onPixmap : m_rollover ? overPixmap : normalPixmap);
+
+  // Icon
+  QPixmap panePixmap    = recolorPixmap(m_standardPixmap);
+  QPixmap paneOffPixmap = setOpacity(panePixmap, 0.8);
+  painter.drawPixmap(
+      0, 0, m_pressed ? panePixmap : m_rollover ? panePixmap : paneOffPixmap);
+
   painter.end();
 }
 
@@ -385,16 +391,9 @@ void TPanelTitleBarButtonSet::select(TPanelTitleBarButton *button) {
 
 TPanelTitleBar::TPanelTitleBar(QWidget *parent,
                                TDockWidget::Orientation orientation)
-    : QFrame(parent), m_isActive(true), m_closeButtonHighlighted(false) {
+    : QFrame(parent), m_closeButtonHighlighted(false) {
   setMouseTracking(true);
   setFocusPolicy(Qt::NoFocus);
-}
-
-//-----------------------------------------------------------------------------
-
-void TPanelTitleBar::setIsActive(bool value) {
-  if (m_isActive == value) return;
-  m_isActive = value;
 }
 
 //-----------------------------------------------------------------------------
@@ -431,16 +430,17 @@ void TPanelTitleBar::paintEvent(QPaintEvent *) {
 
     painter.setBrush(Qt::NoBrush);
     painter.setPen(isPanelActive ? m_activeTitleColor : m_titleColor);
-    painter.drawText(QPointF(10, 15), titleText);
+    painter.drawText(QPointF(8, 13), titleText);
   }
 
   if (dw->isFloating()) {
+    QIcon paneCloseIcon = createQIcon("pane_close");
     const static QPixmap closeButtonPixmap(
-        svgToPixmap(":/Resources/pane_close.svg", QSize(18, 18)));
+        paneCloseIcon.pixmap(20, 18, QIcon::Normal, QIcon::Off));
     const static QPixmap closeButtonPixmapOver(
-        svgToPixmap(":/Resources/pane_close_rollover.svg", QSize(18, 18)));
+        paneCloseIcon.pixmap(20, 18, QIcon::Active));
 
-    QPoint closeButtonPos(rect.right() - 18, rect.top() + 1);
+    QPoint closeButtonPos(rect.right() - 20, rect.top());
 
     if (m_closeButtonHighlighted)
       painter.drawPixmap(closeButtonPos, closeButtonPixmapOver);
@@ -460,7 +460,7 @@ void TPanelTitleBar::mousePressEvent(QMouseEvent *event) {
 
   if (dw->isFloating()) {
     QRect rect = this->rect();
-    QRect closeButtonRect(rect.right() - 18, rect.top() + 1, 18, 18);
+    QRect closeButtonRect(rect.right() - 20, rect.top() + 1, 20, 18);
     if (closeButtonRect.contains(pos) && dw->isFloating()) {
       event->accept();
       dw->hide();

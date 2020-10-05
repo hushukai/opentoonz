@@ -656,7 +656,7 @@ void ParamField::setFxHandle(TFxHandle *fxHandle) {
 
 ParamFieldKeyToggle::ParamFieldKeyToggle(QWidget *parent, std::string name)
     : QWidget(parent), m_status(NOT_ANIMATED), m_highlighted(false) {
-  setFixedSize(15, 15);
+  setFixedSize(20, 20);
 }
 
 //-----------------------------------------------------------------------------
@@ -689,28 +689,71 @@ ParamFieldKeyToggle::Status ParamFieldKeyToggle::getStatus() const {
 //-----------------------------------------------------------------------------
 
 void ParamFieldKeyToggle::paintEvent(QPaintEvent *e) {
+  QIcon icon;
+  const int iconSize = 20;
+  const int radius   = 2;
+
+  // Create rounded rect for key button states
   QPainter p(this);
+  p.setRenderHint(p.Antialiasing, true);
+  QPainterPath path;
+  path.addRoundedRect(
+      QRectF(0.5, 0.5, 19, 19), radius,
+      radius);  // Nudge rect by half pixel so QPen looks pixel perfect
+  QPen pen = QColor(0, 0, 0, 0);
+  p.setPen(pen);
 
   switch (m_status) {
   case NOT_ANIMATED:
-    p.drawPixmap(rect(),
-                 QPixmap(svgToPixmap(":Resources/keyframe_noanim.svg")));
+    pen = QColor(getKeyBorderOffColor());
+    p.setPen(pen);
+    p.fillPath(path, getKeyOffColor());
+    m_pixmap = QPixmap(createQIcon("key_off").pixmap(
+        iconSize, iconSize, QIcon::Normal, QIcon::Off));
+    icon.addPixmap(m_pixmap);
+    icon.paint(&p, QRect(0, 0, iconSize, iconSize));
     break;
   case KEYFRAME:
-    p.drawPixmap(rect(), QPixmap(svgToPixmap(":Resources/keyframe_key.svg")));
+    pen = QColor(getKeyBorderOnColor());
+    p.setPen(pen);
+    p.fillPath(path, getKeyOnColor());
+    m_pixmap =
+        QPixmap(createQIcon("key_on", true)
+                    .pixmap(iconSize, iconSize, QIcon::Normal, QIcon::Off));
+    icon.addPixmap(m_pixmap);
+    icon.paint(&p, QRect(0, 0, iconSize, iconSize));
     break;
   case MODIFIED:
-    p.drawPixmap(rect(),
-                 QPixmap(svgToPixmap(":Resources/keyframe_modified.svg")));
+    pen = QColor(getKeyBorderModifiedColor());
+    p.setPen(pen);
+    p.fillPath(path, getKeyModifiedColor());
+    m_pixmap =
+        QPixmap(createQIcon("key_modified", true)
+                    .pixmap(iconSize, iconSize, QIcon::Normal, QIcon::Off));
+    icon.addPixmap(m_pixmap);
+    icon.paint(&p, QRect(0, 0, iconSize, iconSize));
     break;
   default:
-    p.drawPixmap(rect(),
-                 QPixmap(svgToPixmap(":Resources/keyframe_inbetween.svg")));
+    pen = QColor(getKeyBorderInbetweenColor());
+    p.setPen(pen);
+    p.fillPath(path, getKeyInbetweenColor());
+    m_pixmap =
+        QPixmap(createQIcon("key_on", true)
+                    .pixmap(iconSize, iconSize, QIcon::Normal, QIcon::Off));
+    icon.addPixmap(m_pixmap);
+    icon.paint(&p, QRect(0, 0, iconSize, iconSize));
     break;
   }
+  p.drawPath(path);
+
   if (m_highlighted) {
-    p.fillRect(rect(), QBrush(QColor(50, 100, 255, 100)));
+    pen = QColor(getKeyBorderHighlightColor());
+    p.setPen(pen);
+    p.fillPath(path, getKeyHighlightColor());
+    p.drawPath(path);
   }
+
+  p.end();
 }
 
 //-----------------------------------------------------------------------------
@@ -1243,12 +1286,30 @@ void SpectrumParamField::onKeyRemoved(int keyIndex) {
 }
 
 //=============================================================================
+// Mode Sensitive Box
+//-----------------------------------------------------------------------------
+
+ModeSensitiveBox::ModeSensitiveBox(QWidget *parent,
+                                   ModeChangerParamField *modeChanger,
+                                   QList<int> modes)
+    : QWidget(parent), m_modes(modes) {
+  connect(modeChanger, SIGNAL(modeChanged(int)), this,
+          SLOT(onModeChanged(int)));
+}
+
+//-----------------------------------------------------------------------------
+
+void ModeSensitiveBox::onModeChanged(int modeValue) {
+  setVisible(m_modes.contains(modeValue));
+}
+
+//=============================================================================
 // EnumParamField
 //-----------------------------------------------------------------------------
 
 EnumParamField::EnumParamField(QWidget *parent, QString name,
                                const TIntEnumParamP &param)
-    : ParamField(parent, name, param) {
+    : ModeChangerParamField(parent, name, param) {
   QString str;
   m_paramName = str.fromStdString(param->getName());
   m_om        = new QComboBox(this);
@@ -1300,6 +1361,8 @@ void EnumParamField::onChange(const QString &str) {
   emit currentParamChanged();
   emit actualParamChanged();
 
+  emit modeChanged(m_actualParam->getValue());
+
   if (undo) TUndoManager::manager()->add(undo);
 }
 
@@ -1312,6 +1375,7 @@ void EnumParamField::setParam(const TParamP &current, const TParamP &actual,
   assert(m_currentParam);
   assert(m_actualParam);
   update(frame);
+  emit modeChanged(m_actualParam->getValue());
 }
 
 //-----------------------------------------------------------------------------
@@ -1336,7 +1400,7 @@ void EnumParamField::update(int frame) {
 
 BoolParamField::BoolParamField(QWidget *parent, QString name,
                                const TBoolParamP &param)
-    : ParamField(parent, name, param) {
+    : ModeChangerParamField(parent, name, param) {
   QString str;
   m_paramName = str.fromStdString(param->getName());
   if (!param->hasUILabel()) m_interfaceName = name;
@@ -1362,6 +1426,8 @@ void BoolParamField::onToggled(bool checked) {
   emit currentParamChanged();
   emit actualParamChanged();
 
+  emit modeChanged((checked) ? 1 : 0);
+
   TBoolParamP boolParam = m_actualParam;
   if (boolParam)
     TUndoManager::manager()->add(new BoolParamFieldUndo(
@@ -1377,6 +1443,7 @@ void BoolParamField::setParam(const TParamP &current, const TParamP &actual,
   assert(m_currentParam);
   assert(m_actualParam);
   update(frame);
+  emit modeChanged((m_actualParam->getValue()) ? 1 : 0);
 }
 
 //-----------------------------------------------------------------------------
@@ -1512,7 +1579,7 @@ void StringParamField::onChange() {
   if (m_multiTextFld)
     value = m_multiTextFld->toPlainText().toStdWString();
   else
-    value = m_textFld->text().toStdWString();
+    value     = m_textFld->text().toStdWString();
   TUndo *undo = 0;
 
   if (!m_actualParam || m_actualParam->getValue() == value) return;
@@ -1738,8 +1805,9 @@ ToneCurveParamField::ToneCurveParamField(QWidget *parent, QString name,
 
 void ToneCurveParamField::updateField(const QList<TPointD> value) {
   if (m_actualParam) {
-    assert(m_currentParam && m_currentParam->getCurrentChannel() ==
-                                 m_actualParam->getCurrentChannel());
+    assert(m_currentParam &&
+           m_currentParam->getCurrentChannel() ==
+               m_actualParam->getCurrentChannel());
     m_toneCurveField->setCurrentChannel(m_actualParam->getCurrentChannel());
     assert(m_currentParam &&
            m_currentParam->isLinear() == m_actualParam->isLinear());

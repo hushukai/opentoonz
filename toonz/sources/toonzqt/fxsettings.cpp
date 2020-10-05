@@ -243,41 +243,67 @@ void ParamsPage::setPageField(TIStream &is, const TFxP &fx, bool isVertical) {
       setPageField(is, fx, false);
       m_mainLayout->addLayout(m_horizontalLayout, currentRow, 1, 1, 2);
     } else if (tagName == "vbox") {
-      int shrink            = 0;
-      std::string shrinkStr = is.getTagAttribute("shrink");
-      if (shrinkStr != "") {
-        shrink              = QString::fromStdString(shrinkStr).toInt();
-        std::string label   = is.getTagAttribute("label");
-        QCheckBox *checkBox = new QCheckBox(this);
-        QHBoxLayout *sepLay = new QHBoxLayout();
-        sepLay->setMargin(0);
-        sepLay->setSpacing(5);
-        sepLay->addWidget(checkBox, 0);
-        sepLay->addWidget(new Separator(QString::fromStdString(label), this),
-                          1);
-        int currentRow = m_mainLayout->rowCount();
-        m_mainLayout->addLayout(sepLay, currentRow, 0, 1, 2);
-        m_mainLayout->setRowStretch(currentRow, 0);
+      int shrink                   = 0;
+      std::string shrinkStr        = is.getTagAttribute("shrink");
+      std::string modeSensitiveStr = is.getTagAttribute("modeSensitive");
+      if (shrinkStr != "" || modeSensitiveStr != "") {
+        QWidget *tmpWidget;
+        if (shrinkStr != "") {
+          tmpWidget           = new QWidget(this);
+          shrink              = QString::fromStdString(shrinkStr).toInt();
+          std::string label   = is.getTagAttribute("label");
+          QCheckBox *checkBox = new QCheckBox(this);
+          QHBoxLayout *sepLay = new QHBoxLayout();
+          sepLay->setMargin(0);
+          sepLay->setSpacing(5);
+          sepLay->addWidget(checkBox, 0);
+          sepLay->addWidget(new Separator(QString::fromStdString(label), this),
+                            1);
+          int currentRow = m_mainLayout->rowCount();
+          m_mainLayout->addLayout(sepLay, currentRow, 0, 1, 2);
+          m_mainLayout->setRowStretch(currentRow, 0);
+          //--- signal-slot connection
+          connect(checkBox, SIGNAL(toggled(bool)), tmpWidget,
+                  SLOT(setVisible(bool)));
+          checkBox->setChecked(shrink == 1);
+          tmpWidget->setVisible(shrink == 1);
+        } else {  // modeSensitiveStr != ""
+          QList<int> modes;
+          QStringList modeListStr =
+              QString::fromStdString(is.getTagAttribute("mode"))
+                  .split(',', QString::SkipEmptyParts);
+          for (QString modeNum : modeListStr) modes.push_back(modeNum.toInt());
+          // find the mode combobox
+          ModeChangerParamField *modeChanger = nullptr;
+          for (int r = 0; r < m_mainLayout->rowCount(); r++) {
+            QLayoutItem *li = m_mainLayout->itemAtPosition(r, 1);
+            if (!li || !li->widget()) continue;
+            ModeChangerParamField *field =
+                dynamic_cast<ModeChangerParamField *>(li->widget());
+            if (!field ||
+                field->getParamName().toStdString() != modeSensitiveStr)
+              continue;
+            modeChanger = field;
+            break;
+          }
+          assert(modeChanger);
+          tmpWidget = new ModeSensitiveBox(this, modeChanger, modes);
+        }
+
+        int currentRow           = m_mainLayout->rowCount();
         QGridLayout *keepMainLay = m_mainLayout;
-        /*-- レイアウトを一時的に差し替え --*/
-        m_mainLayout = new QGridLayout(this);
-        m_mainLayout->setMargin(12);
+        // temporary switch the layout
+        m_mainLayout = new QGridLayout();
+        m_mainLayout->setMargin(0);
         m_mainLayout->setVerticalSpacing(10);
         m_mainLayout->setHorizontalSpacing(5);
         m_mainLayout->setColumnStretch(0, 0);
         m_mainLayout->setColumnStretch(1, 1);
         setPageField(is, fx, true);
-
-        QWidget *tmpWidget = new QWidget(this);
         tmpWidget->setLayout(m_mainLayout);
-        /*-- レイアウト戻し --*/
+        // turn back the layout
         m_mainLayout = keepMainLay;
-        m_mainLayout->addWidget(tmpWidget, currentRow + 1, 0, 1, 2);
-        //--- signal-slot connection
-        connect(checkBox, SIGNAL(toggled(bool)), tmpWidget,
-                SLOT(setVisible(bool)));
-        checkBox->setChecked(shrink == 1);
-        tmpWidget->setVisible(shrink == 1);
+        m_mainLayout->addWidget(tmpWidget, currentRow, 0, 1, 2);
       } else
         setPageField(is, fx, true);
     }
@@ -611,6 +637,8 @@ void updateMaximumPageSize(QGridLayout *layout, int &maxLabelWidth,
   }
 
   /*-- Widget側の最適な縦サイズおよび横幅の最大値を得る --*/
+  QMap<int, int> heightsByMode;
+  int maxModeHeight = 0;
   for (int r = 0; r < layout->rowCount(); r++) {
     /*-- Column1にある可能性のあるもの：ParamField, Histogram, Layout,
      * RgbLinkButtons --*/
@@ -618,10 +646,28 @@ void updateMaximumPageSize(QGridLayout *layout, int &maxLabelWidth,
     QLayoutItem *item = layout->itemAtPosition(r, 1);
     if (!item) continue;
 
+    ModeSensitiveBox *box = dynamic_cast<ModeSensitiveBox *>(item->widget());
+    if (box) {
+      // if (box->isHidden()) continue;
+      QGridLayout *innerLay = dynamic_cast<QGridLayout *>(box->layout());
+      if (!innerLay) continue;
+      int tmpHeight = 0;
+      updateMaximumPageSize(innerLay, maxLabelWidth, maxWidgetWidth, tmpHeight);
+      for (int mode : box->modes()) {
+        heightsByMode[mode] += tmpHeight;
+        maxModeHeight = std::max(maxModeHeight, heightsByMode[mode]);
+      }
+
+      // attempt to align the label column
+      innerLay->setColumnMinimumWidth(0, maxLabelWidth);
+      continue;
+    }
+
     QSize itemSize = getItemSize(item);
     if (maxWidgetWidth < itemSize.width()) maxWidgetWidth = itemSize.width();
     fieldsHeight += itemSize.height();
   }
+  if (maxModeHeight > 0) fieldsHeight += maxModeHeight;
 
   if (layout->rowCount() > 1) fieldsHeight += (layout->rowCount() - 1) * 10;
 }
@@ -657,13 +703,15 @@ ParamsPageSet::ParamsPageSet(QWidget *parent, Qt::WFlags flags)
   // TabBar
   m_tabBar = new TabBar(this);
   // This widget is used to set the background color of the tabBar
-  // using the styleSheet.
-  // It is also used to take 6px on the left before the tabBar
-  // and to draw the two lines on the bottom size
+  // using the styleSheet and to draw the two lines on the bottom size.
   m_tabBarContainer = new TabBarContainter(this);
   m_pagesList       = new QStackedWidget(this);
 
-  m_helpButton = new QPushButton(tr("Fx Help"), this);
+  m_helpButton = new QPushButton(tr(""), this);
+  m_helpButton->setIconSize(QSize(20, 20));
+  m_helpButton->setIcon(createQIcon("help"));
+  m_helpButton->setFixedWidth(28);
+  m_helpButton->setToolTip(tr("View help page"));
 
   m_parent = dynamic_cast<ParamViewer *>(parent);
   m_pageFxIndexTable.clear();
@@ -675,12 +723,12 @@ ParamsPageSet::ParamsPageSet(QWidget *parent, Qt::WFlags flags)
 
   //----layout
   QVBoxLayout *mainLayout = new QVBoxLayout();
-  mainLayout->setMargin(1);
+  mainLayout->setMargin(0);
   mainLayout->setSpacing(0);
   {
     QHBoxLayout *hLayout = new QHBoxLayout();
     hLayout->setMargin(0);
-    hLayout->addSpacing(6);
+    hLayout->addSpacing(0);
     {
       hLayout->addWidget(m_tabBar);
       hLayout->addStretch(1);
@@ -871,7 +919,7 @@ void ParamsPageSet::createPage(TIStream &is, const TFxP &fx, int index) {
   std::string tagName;
   if (!is.matchTag(tagName) || tagName != "page")
     throw TException("expected <page>");
-  std::string pageName = is.getTagAttribute("name");
+  std::string pageName         = is.getTagAttribute("name");
   if (pageName == "") pageName = "page";
 
   ParamsPage *paramsPage = new ParamsPage(this, m_parent);
@@ -971,14 +1019,15 @@ ParamViewer::ParamViewer(QWidget *parent, Qt::WFlags flags)
   QLabel *swatchLabel           = new QLabel(tr("Swatch Viewer"), this);
 
   swatchLabel->setObjectName("TitleTxtLabel");
-  showSwatchButton->setObjectName("FxSettingsPreviewShowButton");
+  showSwatchButton->setObjectName("menuToggleButton");
   showSwatchButton->setFixedSize(15, 15);
+  showSwatchButton->setIcon(createQIcon("menu_toggle"));
   showSwatchButton->setCheckable(true);
   showSwatchButton->setChecked(false);
   showSwatchButton->setFocusPolicy(Qt::NoFocus);
 
   QVBoxLayout *mainLayout = new QVBoxLayout(this);
-  mainLayout->setMargin(1);
+  mainLayout->setMargin(0);
   mainLayout->setSpacing(0);
   {
     mainLayout->addWidget(m_tablePageSet, 1);
@@ -1148,7 +1197,7 @@ FxSettings::FxSettings(QWidget *parent, const TPixel32 &checkCol1,
   bool ret = true;
   ret      = ret && connect(m_paramViewer, SIGNAL(currentFxParamChanged()),
                        SLOT(updateViewer()));
-  ret      = ret &&
+  ret = ret &&
         connect(m_viewer, SIGNAL(pointPositionChanged(int, const TPointD &)),
                 SLOT(onPointChanged(int, const TPointD &)));
   ret = ret && connect(m_paramViewer, SIGNAL(preferredSizeChanged(QSize)), this,
@@ -1216,10 +1265,9 @@ void FxSettings::setObjectHandle(TObjectHandle *objectHandle) {
 void FxSettings::createToolBar() {
   m_toolBar = new QToolBar(this);
   m_toolBar->setMovable(false);
-  m_toolBar->setFixedHeight(23);
-  m_toolBar->setIconSize(QSize(17, 17));
+  m_toolBar->setFixedHeight(24);
+  m_toolBar->setIconSize(QSize(20, 20));
   m_toolBar->setObjectName("MediumPaddingToolBar");
-  // m_toolBar->setIconSize(QSize(23, 21));
   // m_toolBar->setSizePolicy(QSizePolicy::MinimumExpanding,
   // QSizePolicy::MinimumExpanding);
 
@@ -1227,13 +1275,13 @@ void FxSettings::createToolBar() {
   QActionGroup *viewModeActGroup = new QActionGroup(m_toolBar);
   viewModeActGroup->setExclusive(false);
   // camera
-  QIcon camera       = createQIconOnOff("viewcamera");
+  QIcon camera       = createQIcon("camera");
   QAction *cameraAct = new QAction(camera, tr("&Camera Preview"), m_toolBar);
   cameraAct->setCheckable(true);
   viewModeActGroup->addAction(cameraAct);
   m_toolBar->addAction(cameraAct);
   // preview
-  QIcon preview       = createQIconOnOff("preview");
+  QIcon preview       = createQIcon("preview");
   QAction *previewAct = new QAction(preview, tr("&Preview"), m_toolBar);
   previewAct->setCheckable(true);
   viewModeActGroup->addAction(previewAct);
@@ -1246,7 +1294,7 @@ void FxSettings::createToolBar() {
   QActionGroup *viewModeGroup = new QActionGroup(m_toolBar);
   viewModeGroup->setExclusive(true);
 
-  QAction *whiteBg = new QAction(createQIconOnOff("preview_white"),
+  QAction *whiteBg = new QAction(createQIcon("preview_white"),
                                  tr("&White Background"), m_toolBar);
   whiteBg->setCheckable(true);
   whiteBg->setChecked(true);
@@ -1254,14 +1302,14 @@ void FxSettings::createToolBar() {
   connect(whiteBg, SIGNAL(triggered()), this, SLOT(setWhiteBg()));
   m_toolBar->addAction(whiteBg);
 
-  QAction *blackBg = new QAction(createQIconOnOff("preview_black"),
+  QAction *blackBg = new QAction(createQIcon("preview_black"),
                                  tr("&Black Background"), m_toolBar);
   blackBg->setCheckable(true);
   viewModeGroup->addAction(blackBg);
   connect(blackBg, SIGNAL(triggered()), this, SLOT(setBlackBg()));
   m_toolBar->addAction(blackBg);
 
-  m_checkboardBg = new QAction(createQIconOnOff("preview_checkboard"),
+  m_checkboardBg = new QAction(createQIcon("preview_checkboard"),
                                tr("&Checkered Background"), m_toolBar);
   m_checkboardBg->setCheckable(true);
   viewModeGroup->addAction(m_checkboardBg);
@@ -1297,10 +1345,10 @@ void FxSettings::setFx(const TFxP &currentFx, const TFxP &actualFx) {
     TFxUtil::setKeyframe(currentFxWithoutCamera, m_frameHandle->getFrameIndex(),
                          actualFx, m_frameHandle->getFrameIndex());
 
-  ToonzScene *scene = 0;
+  ToonzScene *scene        = 0;
   if (m_sceneHandle) scene = m_sceneHandle->getScene();
 
-  int frameIndex = 0;
+  int frameIndex                = 0;
   if (m_frameHandle) frameIndex = m_frameHandle->getFrameIndex();
 
   m_paramViewer->setFx(currentFxWithoutCamera, actualFx, frameIndex, scene);
@@ -1360,7 +1408,7 @@ void FxSettings::setCurrentFx() {
   if (TZeraryColumnFx *zfx = dynamic_cast<TZeraryColumnFx *>(fx.getPointer()))
     fx = zfx->getZeraryFx();
   else
-    hasEmptyInput = hasEmptyInputPort(fx);
+    hasEmptyInput   = hasEmptyInputPort(fx);
   int frame         = m_frameHandle->getFrame();
   ToonzScene *scene = m_sceneHandle->getScene();
   actualFx          = fx;
